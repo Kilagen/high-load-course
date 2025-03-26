@@ -6,7 +6,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
-import ru.quipy.common.utils.CountingRateLimiter
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
@@ -15,9 +14,6 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.max
 
 
 // Advice: always treat time as a Duration
@@ -43,7 +39,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(1020))
 
-    private val semaphore = Semaphore(parallelRequests, true)
+    private val semaphore = Semaphore(parallelRequests, false)
 
     fun handleDeadlinePassed(paymentId: UUID, transactionId: UUID) {
         paymentESService.update(paymentId) {
@@ -73,7 +69,7 @@ class PaymentExternalSystemAdapterImpl(
 
 
         try {
-            if (!semaphore.tryAcquire((deadline - now()) - requestAverageProcessingTime.toMillis(), TimeUnit.MILLISECONDS)) {
+            if (!semaphore.tryAcquire(requestAverageProcessingTime.toMillis(), TimeUnit.MILLISECONDS)) {
                 return handleDeadlinePassed(paymentId, transactionId)
             }
 
