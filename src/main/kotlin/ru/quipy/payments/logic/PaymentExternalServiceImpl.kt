@@ -45,6 +45,14 @@ class PaymentExternalSystemAdapterImpl(
 
     private val semaphore = Semaphore(parallelRequests, true)
 
+    fun handleDeadlinePassed(paymentId: UUID, transactionId: UUID) {
+        paymentESService.update(paymentId) {
+            it.logProcessing(false, now(), transactionId, reason = "Deadline passed")
+        }
+        logger.error("[$accountName] Payment failed for txId: $transactionId, payment: $paymentId")
+        return
+    }
+
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
 
         logger.warn("[$accountName] Submitting payment request for payment $paymentId")
@@ -63,8 +71,12 @@ class PaymentExternalSystemAdapterImpl(
             post(emptyBody)
         }.build()
 
+
         try {
-            semaphore.acquire()
+            if (!semaphore.tryAcquire((deadline - now()) - requestAverageProcessingTime.toMillis(), TimeUnit.MILLISECONDS)) {
+                return handleDeadlinePassed(paymentId, transactionId)
+            }
+
             rateLimiter.tickBlocking()
 
             client.newCall(request).execute().use { response ->
