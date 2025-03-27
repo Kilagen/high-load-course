@@ -39,7 +39,7 @@ class PaymentExternalSystemAdapterImpl(
 
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(1020))
 
-    private val semaphore = Semaphore(parallelRequests, false)
+    private val semaphore = Semaphore(parallelRequests, true)
 
     fun handleDeadlinePassed(paymentId: UUID, transactionId: UUID) {
         paymentESService.update(paymentId) {
