@@ -81,7 +81,6 @@ class PaymentExternalSystemAdapterImpl(
 
             while (!finished) {
                 client.newCall(request).execute().use { response ->
-//                    semaphore.release()
                     val body = try {
                         mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                     } catch (e: Exception) {
@@ -89,7 +88,7 @@ class PaymentExternalSystemAdapterImpl(
                         ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
                     }
 
-                    if (body.message?.contains("Temporary") == true) {
+                    if (body.message?.contains("Temporary error") == true) {
                         attempt++
                         if (attempt >= maxRetryCount) {
                             finished = true
