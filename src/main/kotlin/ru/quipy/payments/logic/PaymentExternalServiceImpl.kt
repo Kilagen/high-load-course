@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -77,6 +78,10 @@ class PaymentExternalSystemAdapterImpl(
 //            .addHeader("timeout", "1")
             .build()
 
+
+        var attempt = 0
+        var finished = false
+
         try {
 //            if (!semaphore.tryAcquire(4500, TimeUnit.MILLISECONDS)) {
 //                return handleDeadlinePassed(paymentId, transactionId)
@@ -84,38 +89,45 @@ class PaymentExternalSystemAdapterImpl(
 
             rateLimiter.tickBlocking()
 
-            var attempt = 0
-            var finished = false
-
             while (!finished) {
-                client.newCall(request).execute().use { response ->
-                    val body = try {
-                        mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
-                    } catch (e: Exception) {
-                        logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
-                        ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
-                    }
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val body = try {
+                            mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
+                        } catch (e: Exception) {
+                            logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
+                            ExternalSysResponse(transactionId.toString(), paymentId.toString(), false, e.message)
+                        }
 
-                    if (body.message?.contains("Temporary error") == true) {
-                        attempt++
-                        if (attempt >= maxRetryCount) {
-                            finished = true
+                        if (body.message?.contains("Temporary error") == true) {
+                            attempt++
+                            if (attempt >= maxRetryCount) {
+                                finished = true
 //                            semaphore.release()
-                        }
-                        else {
-                            Thread.sleep(100)
-                        }
-                    } else {
-                        finished = true
+                            } else {
+                                Thread.sleep(100)
+                            }
+                        } else {
+                            finished = true
 //                        semaphore.release()
+                        }
+
+                        logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+
+                        // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
+                        // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
+                        paymentESService.update(paymentId) {
+                            it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                        }
                     }
-
-                    logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
-
-                    // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                    // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
-                    paymentESService.update(paymentId) {
-                        it.logProcessing(body.result, now(), transactionId, reason = body.message)
+                } catch (e: InterruptedIOException) {
+                    attempt++
+                    if (attempt >= maxRetryCount) {
+                        finished = true
+                        logger.error("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId error on attempt $attempt")
+//                            semaphore.release()
+                    } else {
+                        Thread.sleep(100)
                     }
                 }
             }
