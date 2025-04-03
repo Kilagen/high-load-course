@@ -90,10 +90,9 @@ class PaymentExternalSystemAdapterImpl(
         var finished = false
 
         try {
-            if (!semaphore.tryAcquire(10_000, TimeUnit.MILLISECONDS)) {
+            if (!semaphore.tryAcquire(deadline - now() - requestAverageProcessingTime.toMillis(), TimeUnit.MILLISECONDS)) {
                 return handleDeadlinePassed(paymentId, transactionId)
             }
-
             rateLimiter.tickBlocking()
 
             while (!finished) {
@@ -139,7 +138,7 @@ class PaymentExternalSystemAdapterImpl(
                             semaphore.release()
                     } else {
                         logger.error("[$accountName] timeout occurred: $transactionId, payment: $paymentId error on attempt $attempt")
-                        Thread.sleep(100)
+                        Thread.sleep(backoffMs)
                     }
                 }
             }
