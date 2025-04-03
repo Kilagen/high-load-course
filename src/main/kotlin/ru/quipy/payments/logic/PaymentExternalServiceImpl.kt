@@ -15,6 +15,7 @@ import java.time.Duration
 import java.util.*
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.timerTask
 
 
 // Advice: always treat time as a Duration
@@ -23,6 +24,17 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>
 ) : PaymentExternalSystemAdapter {
 
+    private val timer = Timer()
+    private val responseTimes = Collections.synchronizedList(mutableListOf<Long>())
+
+    init {
+        timer.scheduleAtFixedRate(timerTask {
+            val responseTimesString = responseTimes.joinToString(separator = ", ") { it.toString() }
+            logger.info("responseTimes [$responseTimesString]")
+        }, 0, 20000)
+    }
+
+
     companion object {
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
 
@@ -30,6 +42,7 @@ class PaymentExternalSystemAdapterImpl(
         val mapper = ObjectMapper().registerKotlinModule()
     }
 
+    // (serviceName=onlineStore, accountName=acc-7, parallelRequests=50, rateLimitPerSec=8, price=30, averageProcessingTime=PT1.2S, enabled=false)
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
     private val requestAverageProcessingTime = properties.averageProcessingTime
@@ -38,14 +51,14 @@ class PaymentExternalSystemAdapterImpl(
 
     private val client = OkHttpClient
         .Builder()
-//        .readTimeout(9000, TimeUnit.MILLISECONDS)
-        .callTimeout(1000, TimeUnit.MILLISECONDS)
+        .callTimeout(1300, TimeUnit.MILLISECONDS)
         .build()
 
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(1020))
 
-//    private val semaphore = Semaphore(parallelRequests, true)
-    private val maxRetryCount = 3
+    private val semaphore = Semaphore(parallelRequests, true)
+    private val maxRetryCount = 4
+    private val backoffMs = 100L
 
     fun handleDeadlinePassed(paymentId: UUID, transactionId: UUID) {
         paymentESService.update(paymentId) {
@@ -68,30 +81,28 @@ class PaymentExternalSystemAdapterImpl(
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
-//        val nowMillis = now()
-//        val timeLeftMillis = (deadline - nowMillis).coerceAtLeast(0)
-
         val request = Request.Builder().run {
             url("http://localhost:1234/external/process?serviceName=${serviceName}&accountName=${accountName}&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
             post(emptyBody)
-        }
-//            .addHeader("timeout", "1")
-            .build()
-
+        }.build()
 
         var attempt = 0
         var finished = false
 
         try {
-//            if (!semaphore.tryAcquire(4500, TimeUnit.MILLISECONDS)) {
-//                return handleDeadlinePassed(paymentId, transactionId)
-//            }
+            if (!semaphore.tryAcquire(10_000, TimeUnit.MILLISECONDS)) {
+                return handleDeadlinePassed(paymentId, transactionId)
+            }
 
             rateLimiter.tickBlocking()
 
             while (!finished) {
                 try {
+                    val startCall = System.nanoTime()
                     client.newCall(request).execute().use { response ->
+                        val duration = Duration.ofNanos(System.nanoTime() - startCall).toMillis()
+                        responseTimes.add(duration)
+
                         val body = try {
                             mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
                         } catch (e: Exception) {
@@ -103,13 +114,13 @@ class PaymentExternalSystemAdapterImpl(
                             attempt++
                             if (attempt >= maxRetryCount) {
                                 finished = true
-//                            semaphore.release()
+                            semaphore.release()
                             } else {
-                                Thread.sleep(100)
+                                Thread.sleep(backoffMs)
                             }
                         } else {
                             finished = true
-//                        semaphore.release()
+                            semaphore.release()
                         }
 
                         logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
@@ -124,9 +135,10 @@ class PaymentExternalSystemAdapterImpl(
                     attempt++
                     if (attempt >= maxRetryCount) {
                         finished = true
-                        logger.error("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId error on attempt $attempt")
-//                            semaphore.release()
+                        logger.error("[$accountName] maxRetryCount reached: $transactionId, payment: $paymentId error on attempt $attempt")
+                            semaphore.release()
                     } else {
+                        logger.error("[$accountName] timeout occurred: $transactionId, payment: $paymentId error on attempt $attempt")
                         Thread.sleep(100)
                     }
                 }
@@ -156,7 +168,6 @@ class PaymentExternalSystemAdapterImpl(
     override fun isEnabled() = properties.enabled
 
     override fun name() = properties.accountName
-
 }
 
 public fun now() = System.currentTimeMillis()
