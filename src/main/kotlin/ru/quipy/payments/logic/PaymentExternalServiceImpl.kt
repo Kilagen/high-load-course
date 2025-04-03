@@ -35,7 +35,11 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
-    private val client = OkHttpClient.Builder().build()
+    private val client = OkHttpClient
+        .Builder()
+//        .readTimeout(9000, TimeUnit.MILLISECONDS)
+        .callTimeout(1, TimeUnit.MILLISECONDS)
+        .build()
 
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(1020))
 
@@ -63,14 +67,18 @@ class PaymentExternalSystemAdapterImpl(
             it.logSubmission(success = true, transactionId, now(), Duration.ofMillis(now() - paymentStartedAt))
         }
 
+//        val nowMillis = now()
+//        val timeLeftMillis = (deadline - nowMillis).coerceAtLeast(0)
+
         val request = Request.Builder().run {
             url("http://localhost:1234/external/process?serviceName=${serviceName}&accountName=${accountName}&transactionId=$transactionId&paymentId=$paymentId&amount=$amount")
             post(emptyBody)
-        }.build()
-
+        }
+//            .addHeader("timeout", "1")
+            .build()
 
         try {
-            if (!semaphore.tryAcquire(requestAverageProcessingTime.toMillis(), TimeUnit.MILLISECONDS)) {
+            if (!semaphore.tryAcquire(4500, TimeUnit.MILLISECONDS)) {
                 return handleDeadlinePassed(paymentId, transactionId)
             }
 
