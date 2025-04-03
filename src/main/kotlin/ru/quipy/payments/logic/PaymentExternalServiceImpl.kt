@@ -38,12 +38,12 @@ class PaymentExternalSystemAdapterImpl(
     private val client = OkHttpClient
         .Builder()
 //        .readTimeout(9000, TimeUnit.MILLISECONDS)
-        .callTimeout(1, TimeUnit.MILLISECONDS)
+        .callTimeout(1000, TimeUnit.MILLISECONDS)
         .build()
 
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofMillis(1020))
 
-    private val semaphore = Semaphore(parallelRequests, true)
+//    private val semaphore = Semaphore(parallelRequests, true)
     private val maxRetryCount = 3
 
     fun handleDeadlinePassed(paymentId: UUID, transactionId: UUID) {
@@ -78,9 +78,9 @@ class PaymentExternalSystemAdapterImpl(
             .build()
 
         try {
-            if (!semaphore.tryAcquire(4500, TimeUnit.MILLISECONDS)) {
-                return handleDeadlinePassed(paymentId, transactionId)
-            }
+//            if (!semaphore.tryAcquire(4500, TimeUnit.MILLISECONDS)) {
+//                return handleDeadlinePassed(paymentId, transactionId)
+//            }
 
             rateLimiter.tickBlocking()
 
@@ -100,11 +100,14 @@ class PaymentExternalSystemAdapterImpl(
                         attempt++
                         if (attempt >= maxRetryCount) {
                             finished = true
-                            semaphore.release()
+//                            semaphore.release()
+                        }
+                        else {
+                            Thread.sleep(100)
                         }
                     } else {
                         finished = true
-                        semaphore.release()
+//                        semaphore.release()
                     }
 
                     logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
