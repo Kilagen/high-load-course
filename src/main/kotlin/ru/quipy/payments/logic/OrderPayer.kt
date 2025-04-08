@@ -26,8 +26,9 @@ class OrderPayer {
     @Autowired
     private lateinit var paymentService: PaymentService
 
+
     private val paymentExecutor = ThreadPoolExecutor(
-        64,
+        50,
         128,
         10_000L,
         TimeUnit.MILLISECONDS,
